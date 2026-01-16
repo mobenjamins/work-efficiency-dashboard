@@ -140,6 +140,8 @@
             opacity: 0;
             transition: all 0.3s;
             z-index: 1000;
+            max-width: 90%;
+            text-align: center;
         }
 
         .voice-toast.visible {
@@ -727,7 +729,8 @@
                     { name: 'Contract/legal', hours: 2 },
                     { name: 'Relationship management', hours: 2 },
                     { name: 'Client support', hours: 1.5 }
-                ]
+                ],
+                description: 'Partner and Client Work takes up 12.5 hours per week, which is 36% of your time. This includes client meetings, proposal writing, contracts, and relationship management. It has 35% automation potential.'
             },
             'Engineering': {
                 color: '#AC40BD',
@@ -739,7 +742,8 @@
                     { name: 'Architecture/planning', hours: 2 },
                     { name: 'Bug fixes', hours: 1 },
                     { name: 'DevOps/deployment', hours: 1 }
-                ]
+                ],
+                description: 'Engineering takes up 10 hours per week, which is 29% of your time. This includes coding, code review, architecture planning, bug fixes, and DevOps. It has 70% automation potential through AI coding assistants and CI/CD.'
             },
             'Team Management': {
                 color: '#2563eb',
@@ -750,7 +754,8 @@
                     { name: 'Reviewing team work', hours: 1.5 },
                     { name: 'Hiring/interviews', hours: 1 },
                     { name: 'Team coordination', hours: 1 }
-                ]
+                ],
+                description: 'Team Management takes up 5 hours per week, which is 14% of your time. This includes one-to-ones, reviewing team work, hiring, and coordination. It has only 30% automation potential as it requires human judgement.'
             },
             'Support/Admin/Comms': {
                 color: '#BD4040',
@@ -761,7 +766,8 @@
                     { name: 'Scheduling/calendar', hours: 1.5 },
                     { name: 'Internal comms', hours: 1.5 },
                     { name: 'Admin tasks', hours: 1 }
-                ]
+                ],
+                description: 'Support, Admin and Communications takes up 6 hours per week, which is 17% of your time. This includes email, scheduling, and admin tasks. It has the highest automation potential at 85%.'
             },
             'Learning/L&D': {
                 color: '#BD8941',
@@ -770,7 +776,8 @@
                 subcategories: [
                     { name: 'Reading/courses', hours: 1 },
                     { name: 'Industry research', hours: 0.5 }
-                ]
+                ],
+                description: 'Learning and Development takes up 1.5 hours per week, which is 4% of your time. This includes reading, courses, and industry research. It has low automation potential at 25%.'
             }
         };
 
@@ -778,6 +785,7 @@
         const colors = categories.map(c => categoryData[c].color);
         const hours = categories.map(c => categoryData[c].hours);
         const automationPotential = categories.map(c => categoryData[c].automation);
+        const totalHours = hours.reduce((a, b) => a + b, 0);
 
         let drilldownChart = null;
         let currentDrilldownCategory = null;
@@ -786,6 +794,9 @@
         // Voice recognition
         let recognition = null;
         let isListening = false;
+
+        // Text-to-speech
+        let synth = window.speechSynthesis;
 
         // Donut Chart - Work Distribution
         const distributionCtx = document.getElementById('distributionChart').getContext('2d');
@@ -1071,7 +1082,7 @@
             return `rgba(${r}, ${g}, ${b}, ${opacity})`;
         }
 
-        // Voice Recognition
+        // Voice Recognition - Continuous mode
         function initVoiceRecognition() {
             if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
                 document.getElementById('voiceBtn').style.display = 'none';
@@ -1080,28 +1091,47 @@
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
-            recognition.continuous = false;
+            recognition.continuous = true;  // Keep listening
             recognition.interimResults = false;
             recognition.lang = 'en-GB';
 
             recognition.onresult = function(event) {
-                const transcript = event.results[0][0].transcript.toLowerCase();
-                handleVoiceCommand(transcript);
+                // Get the latest result
+                const lastResult = event.results[event.results.length - 1];
+                if (lastResult.isFinal) {
+                    const transcript = lastResult[0].transcript.toLowerCase().trim();
+                    handleVoiceCommand(transcript);
+                }
             };
 
             recognition.onend = function() {
-                stopListening();
+                // Restart if still supposed to be listening
+                if (isListening) {
+                    try {
+                        recognition.start();
+                    } catch (e) {
+                        // Already started
+                    }
+                }
             };
 
             recognition.onerror = function(event) {
-                showToast('Voice recognition error: ' + event.error);
-                stopListening();
+                if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                    showToast('Voice error: ' + event.error);
+                }
+                // Keep listening unless manually stopped
+                if (isListening && event.error !== 'not-allowed') {
+                    setTimeout(() => {
+                        try {
+                            recognition.start();
+                        } catch (e) {}
+                    }, 100);
+                }
             };
         }
 
         function toggleVoice() {
             if (isListening) {
-                recognition.stop();
                 stopListening();
             } else {
                 startListening();
@@ -1114,16 +1144,22 @@
                 return;
             }
             isListening = true;
-            recognition.start();
+            try {
+                recognition.start();
+            } catch (e) {}
             document.getElementById('voiceBtn').classList.add('listening');
             document.getElementById('voiceBtnText').textContent = 'Listening...';
-            showToast('Listening... Try "show engineering" or "collapse"');
+            showToast('Voice active. Say "help" for commands.');
         }
 
         function stopListening() {
             isListening = false;
+            try {
+                recognition.stop();
+            } catch (e) {}
             document.getElementById('voiceBtn').classList.remove('listening');
             document.getElementById('voiceBtnText').textContent = 'Voice Commands';
+            showToast('Voice commands off');
         }
 
         function handleVoiceCommand(transcript) {
@@ -1139,19 +1175,39 @@
                 'support': 'Support/Admin/Comms',
                 'admin': 'Support/Admin/Comms',
                 'comms': 'Support/Admin/Comms',
+                'communication': 'Support/Admin/Comms',
                 'learning': 'Learning/L&D',
-                'l&d': 'Learning/L&D'
+                'l and d': 'Learning/L&D',
+                'training': 'Learning/L&D'
             };
 
-            // Check for collapse/close command
-            if (transcript.includes('collapse') || transcript.includes('close') || transcript.includes('hide')) {
+            // Help command
+            if (transcript.includes('help') || transcript.includes('commands')) {
+                speak('Available commands: Say show followed by a category name to drill down. Say explain to hear about the current view. Say collapse to close panels. Say stop listening to turn off voice.');
+                return;
+            }
+
+            // Stop listening
+            if (transcript.includes('stop listening') || transcript.includes('turn off')) {
+                stopListening();
+                return;
+            }
+
+            // Explain/describe command
+            if (transcript.includes('explain') || transcript.includes('describe') || transcript.includes('what is this') || transcript.includes('tell me')) {
+                explainCurrentView();
+                return;
+            }
+
+            // Collapse/close command
+            if (transcript.includes('collapse') || transcript.includes('close') || transcript.includes('hide') || transcript.includes('back')) {
                 hideDrilldown();
                 hideHoursSaved();
                 showToast('Collapsed all panels');
                 return;
             }
 
-            // Check for show/drill commands
+            // Show/drill commands
             if (transcript.includes('show') || transcript.includes('drill') || transcript.includes('open')) {
                 for (const [keyword, category] of Object.entries(categoryMatches)) {
                     if (transcript.includes(keyword)) {
@@ -1162,8 +1218,8 @@
                 }
             }
 
-            // Check for savings/hours command
-            if (transcript.includes('saving') || transcript.includes('hours') || transcript.includes('time')) {
+            // Savings/hours command
+            if (transcript.includes('saving') || transcript.includes('hours saved') || transcript.includes('time saved') || transcript.includes('potential')) {
                 for (const [keyword, category] of Object.entries(categoryMatches)) {
                     if (transcript.includes(keyword)) {
                         toggleHoursSaved(category);
@@ -1173,7 +1229,7 @@
                 }
             }
 
-            // Direct category mention
+            // Direct category mention (fallback)
             for (const [keyword, category] of Object.entries(categoryMatches)) {
                 if (transcript.includes(keyword)) {
                     toggleDrilldown(category);
@@ -1181,8 +1237,44 @@
                     return;
                 }
             }
+        }
 
-            showToast('Command not recognised. Try "show engineering" or "collapse"');
+        function explainCurrentView() {
+            let explanation = '';
+            
+            if (currentDrilldownCategory) {
+                const data = categoryData[currentDrilldownCategory];
+                explanation = data.description;
+            } else if (currentHoursSavedCategory) {
+                const data = categoryData[currentHoursSavedCategory];
+                const weeklySaved = (data.hours * data.automation / 100).toFixed(1);
+                const yearlySaved = Math.round(weeklySaved * 52);
+                explanation = `You're viewing time savings for ${currentHoursSavedCategory}. At ${data.automation}% automation, you could save ${weeklySaved} hours per week, which is ${yearlySaved} hours per year.`;
+            } else {
+                explanation = `This is your Work Efficiency Dashboard. You work ${totalHours} hours per week across 5 categories. The pie chart shows how your time is distributed. The bar chart shows automation potential for each category. Partner and Client Work is your largest category at 12.5 hours. Support Admin and Comms has the highest automation potential at 85%. Click any chart to drill down, or say a category name.`;
+            }
+            
+            speak(explanation);
+        }
+
+        function speak(text) {
+            // Cancel any ongoing speech
+            synth.cancel();
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-GB';
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            
+            // Find a good voice
+            const voices = synth.getVoices();
+            const preferredVoice = voices.find(v => v.lang.includes('en-GB')) || voices.find(v => v.lang.includes('en'));
+            if (preferredVoice) {
+                utterance.voice = preferredVoice;
+            }
+            
+            synth.speak(utterance);
+            showToast('Speaking...');
         }
 
         function showToast(message) {
@@ -1196,6 +1288,11 @@
 
         // Initialise
         initVoiceRecognition();
+        
+        // Load voices (needed for some browsers)
+        if (synth.onvoiceschanged !== undefined) {
+            synth.onvoiceschanged = () => {};
+        }
     </script>
 </body>
 </html>
