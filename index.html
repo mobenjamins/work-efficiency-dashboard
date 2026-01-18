@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Work Efficiency Dashboard | Benjamin Oghene</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script type="importmap">
+        {
+            "imports": {
+                "kokoro-js": "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js"
+            }
+        }
+    </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -114,6 +121,44 @@
 
         .voice-btn .mic-icon {
             font-size: 1rem;
+        }
+
+        .tts-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #fff;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            color: #6b7280;
+            font-weight: 500;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .tts-status.loading {
+            color: #f59e0b;
+        }
+
+        .tts-status.ready {
+            color: #10b981;
+        }
+
+        .tts-status.error {
+            color: #dc2626;
+        }
+
+        .tts-spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #f59e0b;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
 
         @keyframes pulse {
@@ -555,6 +600,10 @@
             </div>
             <div class="header-badges">
                 <div class="live-badge">Live Analysis Active</div>
+                <div class="tts-status loading" id="ttsStatus">
+                    <div class="tts-spinner"></div>
+                    <span id="ttsStatusText">Loading Kokoro TTS...</span>
+                </div>
                 <button class="voice-btn" id="voiceBtn" onclick="toggleVoice()">
                     <span class="mic-icon">🎤</span>
                     <span id="voiceBtnText">Voice Commands</span>
@@ -716,7 +765,47 @@
         </div>
     </div>
 
-    <script>
+    <script type="module">
+        // Import Kokoro TTS
+        import { KokoroTTS } from 'kokoro-js';
+
+        // Kokoro TTS instance
+        let kokoroTTS = null;
+        let audioContext = null;
+        let isKokoroReady = false;
+
+        // Initialise Kokoro TTS
+        async function initKokoroTTS() {
+            const statusEl = document.getElementById('ttsStatus');
+            const statusText = document.getElementById('ttsStatusText');
+
+            try {
+                statusText.textContent = 'Loading Kokoro TTS (~100MB)...';
+
+                kokoroTTS = await KokoroTTS.from_pretrained(
+                    "onnx-community/Kokoro-82M-ONNX",
+                    { dtype: "q8" }
+                );
+
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                isKokoroReady = true;
+
+                statusEl.classList.remove('loading');
+                statusEl.classList.add('ready');
+                statusEl.innerHTML = '<span>✓</span><span id="ttsStatusText">Kokoro TTS Ready</span>';
+
+                console.log('Kokoro TTS loaded successfully');
+            } catch (error) {
+                console.error('Failed to load Kokoro TTS:', error);
+                statusEl.classList.remove('loading');
+                statusEl.classList.add('error');
+                statusEl.innerHTML = '<span>⚠</span><span id="ttsStatusText">TTS Unavailable (using fallback)</span>';
+            }
+        }
+
+        // Start loading Kokoro in the background
+        initKokoroTTS();
+
         // Category data
         const categoryData = {
             'Partner & Client Work': {
@@ -794,9 +883,6 @@
         // Voice recognition
         let recognition = null;
         let isListening = false;
-
-        // Text-to-speech
-        let synth = window.speechSynthesis;
 
         // Donut Chart - Work Distribution
         const distributionCtx = document.getElementById('distributionChart').getContext('2d');
@@ -1257,24 +1343,77 @@
             speak(explanation);
         }
 
-        function speak(text) {
-            // Cancel any ongoing speech
+        // Current audio source for stopping
+        let currentAudioSource = null;
+
+        async function speak(text) {
+            showToast('Generating speech...');
+
+            // Stop any currently playing audio
+            if (currentAudioSource) {
+                try {
+                    currentAudioSource.stop();
+                } catch (e) {}
+                currentAudioSource = null;
+            }
+
+            // Use Kokoro if ready, otherwise fall back to browser TTS
+            if (isKokoroReady && kokoroTTS) {
+                try {
+                    // Generate audio with Kokoro (using British female voice)
+                    const audio = await kokoroTTS.generate(text, {
+                        voice: "bf_emma"  // British female voice
+                    });
+
+                    // Resume audio context if suspended (browser autoplay policy)
+                    if (audioContext.state === 'suspended') {
+                        await audioContext.resume();
+                    }
+
+                    // Get the raw audio data
+                    const rawAudio = audio.toWav();
+
+                    // Decode and play
+                    const audioBuffer = await audioContext.decodeAudioData(rawAudio.buffer);
+                    const source = audioContext.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioContext.destination);
+
+                    currentAudioSource = source;
+                    source.start(0);
+                    showToast('Speaking (Kokoro)...');
+
+                    source.onended = () => {
+                        currentAudioSource = null;
+                    };
+                } catch (error) {
+                    console.error('Kokoro TTS error:', error);
+                    // Fall back to browser TTS
+                    speakWithBrowserTTS(text);
+                }
+            } else {
+                // Fall back to browser TTS
+                speakWithBrowserTTS(text);
+            }
+        }
+
+        function speakWithBrowserTTS(text) {
+            const synth = window.speechSynthesis;
             synth.cancel();
-            
+
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = 'en-GB';
             utterance.rate = 1.0;
             utterance.pitch = 1.0;
-            
-            // Find a good voice
+
             const voices = synth.getVoices();
             const preferredVoice = voices.find(v => v.lang.includes('en-GB')) || voices.find(v => v.lang.includes('en'));
             if (preferredVoice) {
                 utterance.voice = preferredVoice;
             }
-            
+
             synth.speak(utterance);
-            showToast('Speaking...');
+            showToast('Speaking (fallback)...');
         }
 
         function showToast(message) {
@@ -1286,13 +1425,11 @@
             }, 3000);
         }
 
-        // Initialise
+        // Initialise voice recognition
         initVoiceRecognition();
-        
-        // Load voices (needed for some browsers)
-        if (synth.onvoiceschanged !== undefined) {
-            synth.onvoiceschanged = () => {};
-        }
+
+        // Make toggleVoice available globally (for onclick)
+        window.toggleVoice = toggleVoice;
     </script>
 </body>
 </html>
